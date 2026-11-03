@@ -7,4 +7,13 @@ out/
 # Eclipse build outputs
 eclipse/bin/
 eclipse/build/
+eclipse/target/*.zip
+eclipse/target/*.xml
+eclipse/target/local-artifacts.properties
+eclipse/target/skippedP2Dependencies.txt
+eclipse/update-site/target/
 *.class
+
+# Visual Studio build outputs
+visualstudio/**/bin/
+visualstudio/**/obj/

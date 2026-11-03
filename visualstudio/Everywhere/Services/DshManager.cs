@@ -119,6 +119,71 @@ namespace Everywhere.Services
             return "ewh.cmd";
         }
 
+        private string FindNpmExecutable()
+        {
+            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            var candidates = new[]
+            {
+                Path.Combine(programFiles, "nodejs", "npm.cmd"),
+                Path.Combine(localAppData, "Programs", "nodejs", "npm.cmd")
+            };
+            foreach (var candidate in candidates)
+            {
+                if (File.Exists(candidate)) return candidate;
+            }
+
+            var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+            foreach (var directory in path.Split(Path.PathSeparator))
+            {
+                if (string.IsNullOrWhiteSpace(directory)) continue;
+                var candidate = Path.Combine(directory.Trim().Trim('"'), "npm.cmd");
+                if (File.Exists(candidate)) return candidate;
+            }
+            return "npm.cmd";
+        }
+
+        private static string QuoteCmdArgument(string value)
+        {
+            if (!Regex.IsMatch(value, "[\\s&|<>()^\"%!]")) return value;
+            return "\"" + Regex.Replace(value, "([\"^&|<>()%!])", "^$1") + "\"";
+        }
+
+        private static ProcessStartInfo CreateCommandStartInfo(string executable, string arguments, string? workingDirectory = null)
+        {
+            var isBatch = executable.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)
+                || executable.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);
+            var info = new ProcessStartInfo
+            {
+                FileName = isBatch ? Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe" : executable,
+                Arguments = isBatch ? $"/d /s /c {QuoteCmdArgument(executable)} {arguments}" : arguments,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            if (!string.IsNullOrWhiteSpace(workingDirectory)) info.WorkingDirectory = workingDirectory;
+            return info;
+        }
+
+        private async System.Threading.Tasks.Task<int> RunNpmInstallAsync(string npmExecutable, string packageName)
+        {
+            Log($"Executing: {npmExecutable} install -g {packageName}");
+            using var process = Process.Start(CreateCommandStartInfo(npmExecutable, $"install -g {packageName}"));
+            if (process == null) return -1;
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            await System.Threading.Tasks.Task.Run(() => process.WaitForExit());
+            var output = await System.Threading.Tasks.Task.WhenAll(stdoutTask, stderrTask);
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+            foreach (var line in (output[0] + Environment.NewLine + output[1]).Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                Log(line);
+            }
+            return process.ExitCode;
+        }
+
         public async System.Threading.Tasks.Task<bool> InstallHarnessAsync()
         {
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
@@ -129,34 +194,17 @@ namespace Everywhere.Services
 
             try
             {
+                var npmExecutable = FindNpmExecutable();
+                Log("Installing pnpm (required by the Harness plugin installer)...");
+                var pnpmExitCode = await RunNpmInstallAsync(npmExecutable, "pnpm");
+                if (pnpmExitCode != 0)
+                {
+                    Log($"Warning: pnpm installation exited with code {pnpmExitCode}. Continuing...");
+                }
+
                 Log("Installing @everywhere-harness/ewh with npm...");
-                using var process = Process.Start(new ProcessStartInfo
-                {
-                    FileName = "cmd.exe",
-                    Arguments = "/c npm install -g @everywhere-harness/ewh",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                });
-                if (process == null)
-                {
-                    Log("Failed to start npm. Run `npm install -g @everywhere-harness/ewh` in a terminal.");
-                    return false;
-                }
-
-                var stdoutTask = process.StandardOutput.ReadToEndAsync();
-                var stderrTask = process.StandardError.ReadToEndAsync();
-                await System.Threading.Tasks.Task.Run(() => process.WaitForExit());
-                var output = await System.Threading.Tasks.Task.WhenAll(stdoutTask, stderrTask);
-                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-
-                foreach (var line in (output[0] + Environment.NewLine + output[1]).Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
-                {
-                    Log(line);
-                }
-
-                if (process.ExitCode == 0)
+                var harnessExitCode = await RunNpmInstallAsync(npmExecutable, "@everywhere-harness/ewh");
+                if (harnessExitCode == 0)
                 {
                     Log("EveryWhere Code installed successfully.");
                     return true;
@@ -348,16 +396,7 @@ namespace Everywhere.Services
 
             try
             {
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = executable,
-                    Arguments = arguments,
-                    WorkingDirectory = cwd,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
+                var startInfo = CreateCommandStartInfo(executable, arguments, cwd);
 
                 if (!string.IsNullOrWhiteSpace(options?.ApiKey))
                 {

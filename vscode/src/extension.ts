@@ -72,6 +72,29 @@ function updateStatusBar(item: vscode.StatusBarItem, info: HarnessInfo): void {
 
 let dshManagerInstance: DshProcessManager | null = null
 
+const RELOAD_PROMPTED_VERSION_KEY = 'everywhere.reloadPromptedVersion'
+
+/**
+ * Offers VS Code's Reload Window action once for each installed extension version.
+ * This is especially important after installing a VSIX, because the extension host
+ * may not fully expose the contributed sidebar until the window is reloaded.
+ */
+async function offerReloadAfterInstall(context: vscode.ExtensionContext): Promise<void> {
+  const currentVersion = String(context.extension.packageJSON.version ?? 'unknown')
+  const promptedVersion = context.globalState.get<string>(RELOAD_PROMPTED_VERSION_KEY)
+  if (promptedVersion === currentVersion) return
+
+  // Persist before showing the action so a reload cannot cause a notification loop.
+  await context.globalState.update(RELOAD_PROMPTED_VERSION_KEY, currentVersion)
+  const action = await vscode.window.showInformationMessage(
+    'EveryWhere Code foi instalado ou atualizado. Recarregue a janela para concluir o carregamento da extensão.',
+    'Reload Window',
+  )
+  if (action === 'Reload Window') {
+    await vscode.commands.executeCommand('workbench.action.reloadWindow')
+  }
+}
+
 /**
  * Extension activation entrypoint.
  */
@@ -80,6 +103,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const outputChannel = vscode.window.createOutputChannel('EveryWhere Harness')
   context.subscriptions.push(outputChannel)
+
+  void offerReloadAfterInstall(context).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    outputChannel.appendLine(`[EveryWhere Harness] Could not offer Reload Window: ${message}`)
+  })
 
   const dshManager = new DshProcessManager(
     currentConfig,

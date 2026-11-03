@@ -5,7 +5,7 @@ description: Use before committing, pushing, tagging, or triggering releases in 
 
 # Everywhere Multi-IDE Release Validator
 
-Use this skill whenever any extension code, configuration, version, or workflow in `Everywhere-DeepSeek-Harness` is created, modified, or prepared for a Git commit, push, tag, or release.
+Use this skill whenever any extension code, configuration, version, or workflow in `Everywhere-Code` is created, modified, or prepared for a Git commit, push, tag, or release.
 
 ## Objective
 

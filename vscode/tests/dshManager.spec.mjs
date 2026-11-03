@@ -40,9 +40,31 @@ describe('EveryWhere Harness VS Code Extension - Runtime URL Parsing', () => {
 })
 
 describe('EveryWhere Harness VS Code Extension - Command Resolution', () => {
-  it('formats npm install command properly', () => {
-    const npmCmd = 'npm install -g @everywhere-harness/ewh'
-    assert.strictEqual(npmCmd, 'npm install -g @everywhere-harness/ewh')
+  it('formats npm install commands for pnpm and Harness properly', () => {
+    const pnpmCmd = 'npm install -g pnpm'
+    const harnessCmd = 'npm install -g @everywhere-harness/ewh'
+    assert.strictEqual(pnpmCmd, 'npm install -g pnpm')
+    assert.strictEqual(harnessCmd, 'npm install -g @everywhere-harness/ewh')
+  })
+
+  it('passes a Windows .cmd path with spaces as one cmd.exe command line', () => {
+    const quoteCmdArgument = (value) => {
+      if (!/[\s&|<>()^"%!]/.test(value)) return value
+      return `"${value.replace(/(["^&|<>()%!])/g, '^$1')}"`
+    }
+    const innerCommandLine = [
+      'C:\\Program Files\\nodejs\\npm.cmd',
+      'install',
+      '-g',
+      '@everywhere-harness/ewh',
+    ].map(quoteCmdArgument).join(' ')
+    const commandLine = `"${innerCommandLine}"`
+
+    assert.strictEqual(
+      commandLine,
+      '""C:\\Program Files\\nodejs\\npm.cmd" install -g @everywhere-harness/ewh"',
+    )
+    assert.ok(!commandLine.includes('\\"'), 'quotes must not be escaped into literal backslashes')
   })
 
   it('preserves quoted Windows executable paths when parsing configuration', () => {
@@ -66,6 +88,15 @@ describe('EveryWhere Harness VS Code Extension - Command Resolution', () => {
     const sourceCheckout = 'C:\\engenharia\\everywhere-harness\\apps\\cli\\src\\bin.ts'
     const installedCommands = []
     assert.strictEqual(installedCommands.includes(sourceCheckout), false)
+  })
+})
+
+describe('EveryWhere Harness VS Code Extension - Reload after VSIX install', () => {
+  it('uses the official VS Code reload-window command', () => {
+    const reloadCommand = 'workbench.action.reloadWindow'
+    const promptedVersionKey = 'everywhere.reloadPromptedVersion'
+    assert.strictEqual(reloadCommand, 'workbench.action.reloadWindow')
+    assert.strictEqual(promptedVersionKey, 'everywhere.reloadPromptedVersion')
   })
 })
 

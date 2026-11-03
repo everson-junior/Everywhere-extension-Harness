@@ -130,13 +130,30 @@ export async function checkDshPort(port: number): Promise<boolean> {
   return false
 }
 
+function quoteCmdArgument(value: string): string {
+  if (!/[\s&|<>()^"%!]/.test(value)) return value
+  return `"${value.replace(/(["^&|<>()%!])/g, '^$1')}"`
+}
+
+export function buildWindowsCmdCommand(command: string, args: string[]): string {
+  const commandLine = [quoteCmdArgument(command), ...args.map(quoteCmdArgument)].join(' ')
+  // cmd.exe /s /c requires an additional outer quote pair when the command
+  // itself starts with a quoted executable path. windowsVerbatimArguments
+  // below prevents Node from converting those quotes to literal \" text.
+  return `"${commandLine}"`
+}
+
 function spawnExecutable(
   command: string,
   args: string[],
   options: Parameters<typeof spawn>[2],
 ): ChildProcess {
   if (process.platform === 'win32' && command.toLowerCase().endsWith('.cmd')) {
-    return spawn(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', command, ...args], options)
+    const commandLine = buildWindowsCmdCommand(command, args)
+    return spawn(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', commandLine], {
+      ...options,
+      windowsVerbatimArguments: true,
+    })
   }
   return spawn(command, args, options)
 }
@@ -875,6 +892,12 @@ export class DshProcessManager {
         })
         child.on('error', () => res(false))
       })
+    }
+
+    // The Harness plugin installer requires pnpm. Install it first on every platform.
+    const pnpmReady = await runInstall(['install', '-g', 'pnpm'], 'Global install (pnpm)')
+    if (!pnpmReady) {
+      this.outputChannel.appendLine('[EveryWhere Harness] Warning: pnpm could not be installed automatically. Continuing with Harness installation...')
     }
 
     // Step 1: Try global installation of @everywhere-harness/ewh, then legacy fallbacks

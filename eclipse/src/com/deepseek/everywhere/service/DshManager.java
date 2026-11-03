@@ -270,27 +270,76 @@ public class DshManager {
         checker.start();
     }
 
+    private String findNpmExecutable() {
+        if (!System.getProperty("os.name", "").toLowerCase().contains("win")) return "npm";
+
+        List<File> candidates = new ArrayList<>();
+        String programFiles = System.getenv("ProgramFiles");
+        String programW6432 = System.getenv("ProgramW6432");
+        String localAppData = System.getenv("LOCALAPPDATA");
+        if (programFiles != null) candidates.add(new File(programFiles, "nodejs/npm.cmd"));
+        if (programW6432 != null) candidates.add(new File(programW6432, "nodejs/npm.cmd"));
+        if (localAppData != null) candidates.add(new File(localAppData, "Programs/nodejs/npm.cmd"));
+        for (File candidate : candidates) {
+            if (candidate.isFile()) return candidate.getAbsolutePath();
+        }
+
+        try {
+            Process proc = new ProcessBuilder("where.exe", "npm.cmd").start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+                String line = reader.readLine();
+                if (proc.waitFor(2, TimeUnit.SECONDS) && line != null && new File(line.trim()).isFile()) {
+                    return new File(line.trim()).getAbsolutePath();
+                }
+            }
+        } catch (Exception ignored) {}
+        return "npm.cmd";
+    }
+
+    private static String quoteWindowsCommandArgument(String value) {
+        if (!value.matches(".*[\\s&|<>()^\"%!].*")) return value;
+        return "\"" + value.replaceAll("([\"^&|<>()%!])", "^$1") + "\"";
+    }
+
+    private static String buildWindowsCommand(String executable, List<String> arguments) {
+        List<String> parts = new ArrayList<>();
+        parts.add(quoteWindowsCommandArgument(executable));
+        for (String argument : arguments) parts.add(quoteWindowsCommandArgument(argument));
+        return String.join(" ", parts);
+    }
+
+    private int runNpmInstall(String npmExecutable, boolean isWindows, String packageName) throws Exception {
+        List<String> arguments = Arrays.asList("install", "-g", packageName);
+        ProcessBuilder builder = isWindows
+                ? new ProcessBuilder("cmd.exe", "/d", "/s", "/c", buildWindowsCommand(npmExecutable, arguments))
+                : new ProcessBuilder(npmExecutable, "install", "-g", packageName);
+        EverywhereConsole.log("Executing: " + npmExecutable + " " + String.join(" ", arguments));
+        builder.redirectErrorStream(true);
+        Process process = builder.start();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) EverywhereConsole.log(line);
+        }
+        return process.waitFor();
+    }
+
     public void installHarness() {
         if (!installationInProgress.compareAndSet(false, true)) return;
         setStatus(HarnessStatus.INSTALLING, null, null, null);
 
         Thread installer = new Thread(() -> {
             try {
-                EverywhereConsole.log("Installing @everywhere-harness/ewh with npm...");
                 boolean isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
-                ProcessBuilder builder = isWindows
-                        ? new ProcessBuilder("cmd.exe", "/c", "npm install -g @everywhere-harness/ewh")
-                        : new ProcessBuilder("npm", "install", "-g", "@everywhere-harness/ewh");
-                builder.redirectErrorStream(true);
-                Process process = builder.start();
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        EverywhereConsole.log(line);
-                    }
+                String npmExecutable = findNpmExecutable();
+
+                EverywhereConsole.log("Installing pnpm (required by the Harness plugin installer)...");
+                int pnpmExitCode = runNpmInstall(npmExecutable, isWindows, "pnpm");
+                if (pnpmExitCode != 0) {
+                    EverywhereConsole.log("Warning: pnpm installation exited with code " + pnpmExitCode + ". Continuing...");
                 }
 
-                int exitCode = process.waitFor();
+                EverywhereConsole.log("Installing @everywhere-harness/ewh with npm...");
+                int exitCode = runNpmInstall(npmExecutable, isWindows, "@everywhere-harness/ewh");
                 boolean available = exitCode == 0 && isDshAvailable(lastCustomDshPath);
                 if (available) {
                     EverywhereConsole.log("EveryWhere Code installed successfully.");
@@ -464,6 +513,15 @@ public class DshManager {
         final String apiKey = store.getString(PreferenceConstants.P_API_KEY);
         final String baseUrl = store.getString(PreferenceConstants.P_BASE_URL);
 
+        final List<String> runtimeArguments = new ArrayList<>();
+        runtimeArguments.add("--profile");
+        runtimeArguments.add(profile);
+        runtimeArguments.add("--no-open");
+        if (targetPort > 0) {
+            runtimeArguments.add("--port");
+            runtimeArguments.add(String.valueOf(targetPort));
+        }
+
         final List<String> cmdList = new ArrayList<>();
         boolean isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
         if (isWindows && (executable.toLowerCase().endsWith(".cmd") ||
@@ -473,17 +531,13 @@ public class DshManager {
                 "dsh".equalsIgnoreCase(executable) ||
                 "dsh.cmd".equalsIgnoreCase(executable))) {
             cmdList.add("cmd.exe");
+            cmdList.add("/d");
+            cmdList.add("/s");
             cmdList.add("/c");
-            cmdList.add(executable);
+            cmdList.add(buildWindowsCommand(executable, runtimeArguments));
         } else {
             cmdList.add(executable);
-        }
-        cmdList.add("--profile");
-        cmdList.add(profile);
-        cmdList.add("--no-open");
-        if (targetPort > 0) {
-            cmdList.add("--port");
-            cmdList.add(String.valueOf(targetPort));
+            cmdList.addAll(runtimeArguments);
         }
 
         EverywhereConsole.log("Executável: " + executable);

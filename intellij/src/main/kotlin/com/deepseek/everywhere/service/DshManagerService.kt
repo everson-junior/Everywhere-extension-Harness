@@ -99,23 +99,63 @@ class DshManagerService(private val project: Project) {
         }
     }
 
+    private fun findNpmExecutable(): String {
+        if (!SystemInfo.isWindows) return "npm"
+
+        val candidates = listOfNotNull(
+            System.getenv("ProgramFiles")?.let { File(it, "nodejs/npm.cmd") },
+            System.getenv("ProgramW6432")?.let { File(it, "nodejs/npm.cmd") },
+            System.getenv("LOCALAPPDATA")?.let { File(it, "Programs/nodejs/npm.cmd") }
+        )
+        candidates.firstOrNull { it.isFile }?.let { return it.absolutePath }
+
+        try {
+            val process = ProcessBuilder("where.exe", "npm.cmd").start()
+            val firstLine = process.inputStream.bufferedReader().use { it.readLine() }
+            if (process.waitFor(2, TimeUnit.SECONDS) && !firstLine.isNullOrBlank()) {
+                val npm = File(firstLine.trim())
+                if (npm.isFile) return npm.absolutePath
+            }
+        } catch (_: Exception) {}
+        return "npm.cmd"
+    }
+
+    private fun quoteWindowsCommandArgument(value: String): String {
+        if (!Regex("[\\s&|<>()^\"%!]").containsMatchIn(value)) return value
+        return "\"${value.replace(Regex("[\"^&|<>()%!]")) { "^${it.value}" }}\""
+    }
+
+    private fun buildWindowsCommand(executable: String, arguments: List<String>): String =
+        (listOf(executable) + arguments).joinToString(" ") { quoteWindowsCommandArgument(it) }
+
+    private fun runNpmInstall(npmExecutable: String, packageName: String): Int {
+        val arguments = listOf("install", "-g", packageName)
+        val command = if (SystemInfo.isWindows) {
+            listOf("cmd.exe", "/d", "/s", "/c", buildWindowsCommand(npmExecutable, arguments))
+        } else {
+            listOf(npmExecutable) + arguments
+        }
+        appendLog("Executing: $npmExecutable ${arguments.joinToString(" ")}")
+        val process = ProcessBuilder(command).redirectErrorStream(true).start()
+        process.inputStream.bufferedReader().useLines { lines -> lines.forEach(::appendLog) }
+        return process.waitFor()
+    }
+
     fun installHarness() {
         if (!isInstalling.compareAndSet(false, true)) return
         setStatus(HarnessStatus.INSTALLING)
 
         Thread {
             try {
+                val npmExecutable = findNpmExecutable()
+                appendLog("Installing pnpm (required by the Harness plugin installer)...")
+                val pnpmExitCode = runNpmInstall(npmExecutable, "pnpm")
+                if (pnpmExitCode != 0) {
+                    appendLog("Warning: pnpm installation exited with code $pnpmExitCode. Continuing...")
+                }
+
                 appendLog("Installing @everywhere-harness/ewh with npm...")
-                val command = if (SystemInfo.isWindows) {
-                    listOf("cmd.exe", "/c", "npm install -g @everywhere-harness/ewh")
-                } else {
-                    listOf("npm", "install", "-g", "@everywhere-harness/ewh")
-                }
-                val process = ProcessBuilder(command).redirectErrorStream(true).start()
-                process.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach(::appendLog)
-                }
-                val exitCode = process.waitFor()
+                val exitCode = runNpmInstall(npmExecutable, "@everywhere-harness/ewh")
                 val available = exitCode == 0 && isHarnessAvailable()
                 val message = if (available) {
                     "EveryWhere Code installed successfully."
@@ -310,6 +350,12 @@ class DshManagerService(private val project: Project) {
         val workingDir = resolveWorkspaceDirectory()
         val profileArg = settings.profile.ifBlank { "web" }
 
+        val runtimeArguments = mutableListOf("--profile", profileArg, "--no-open")
+        if (settings.port > 0) {
+            runtimeArguments.add("--port")
+            runtimeArguments.add(settings.port.toString())
+        }
+
         val cmdList = mutableListOf<String>()
         if (SystemInfo.isWindows && (executable.lowercase().endsWith(".cmd") ||
                     executable.lowercase().endsWith(".bat") ||
@@ -317,18 +363,10 @@ class DshManagerService(private val project: Project) {
                     executable.equals("ewh.cmd", ignoreCase = true) ||
                     executable.equals("dsh", ignoreCase = true) ||
                     executable.equals("dsh.cmd", ignoreCase = true))) {
-            cmdList.add("cmd.exe")
-            cmdList.add("/c")
-            cmdList.add(executable)
+            cmdList.addAll(listOf("cmd.exe", "/d", "/s", "/c", buildWindowsCommand(executable, runtimeArguments)))
         } else {
             cmdList.add(executable)
-        }
-        cmdList.add("--profile")
-        cmdList.add(profileArg)
-        cmdList.add("--no-open")
-        if (settings.port > 0) {
-            cmdList.add("--port")
-            cmdList.add(settings.port.toString())
+            cmdList.addAll(runtimeArguments)
         }
 
         Thread {
